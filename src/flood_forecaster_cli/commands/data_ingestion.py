@@ -86,6 +86,26 @@ def fetch_river_data(configuration: Config):
         click.echo("No new river data fetched.")
 
 
+@data_ingestion.command("fetch-river-data-from-public-schema", help="Fetch river levels from public schema")
+@common_options
+def fetch_river_data_from_public_schema(configuration: Config):
+    """
+    Fetch river level data from public schema station_river_data.
+
+    USAGE:
+    flood_forecaster_cli data_ingestion fetch-river-data-from-public-schema [--configfile <path>]
+
+    :param configuration: Configuration object containing settings.
+    """
+    click.echo("Fetching river data from public schema station_river_data...")
+    from flood_forecaster.data_ingestion.public_schema.station_river_data import fill_gaps_using_public_schema
+    success = fill_gaps_using_public_schema(configuration)
+    if success:
+        click.echo("Successfully fetched river data from public schema.")
+    else:
+        click.echo("Failed to fetch river data from public schema.")
+
+
 @data_ingestion.command("fetch-river-data-from-csv", help="Fetch river levels from CSV file (SNRFA and SWALIM exports)")
 @click.argument('location_name', type=str, required=True)
 @click.option('--snrfa-file', '-a', type=click.Path(exists=True), help="Path to the SNRFA CSV file (archive).")

@@ -1,31 +1,13 @@
-#!/usr/bin/env python
-"""
-!!!NOTE: THIS FUNCTIONALITY HAS BEEN ADDED TO src/flood_forecaster/data_ingestion/public_schema AND CAN BE RUN USING flood-cli data-ingestion fetch-river-data-from-public-schema COMMAND
-
-Fill gaps in historical_river_level table using data from public.station_river_data.
-
-This script:
-1. Reads station mapping from river_station_metadata (station_name -> swalim_internal_id)
-2. Identifies gaps in historical_river_level per location
-3. Fetches missing data from public.station_river_data using the swalim_internal_id
-4. Inserts the missing data into historical_river_level
-
-Use this to backfill historical river data gaps that prevent catchup predictions.
-"""
-
-import sys
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 from sqlalchemy import text
 
-# Add the src directory to the path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
+from flood_forecaster import DatabaseConnection
 from flood_forecaster.utils.configuration import Config
-from flood_forecaster.utils.database_helper import DatabaseConnection
+from flood_forecaster.utils.logging_config import get_logger
 
+logger = get_logger(__name__)
 
 def get_station_mapping(conn) -> Dict[str, int]:
     """
@@ -48,7 +30,6 @@ def get_station_mapping(conn) -> Dict[str, int]:
         mapping[station_name] = swalim_id
 
     return mapping
-
 
 def get_existing_data_range(conn, location: str) -> Tuple[date | None, date | None, int]:
     """
@@ -139,7 +120,7 @@ def fetch_data_from_public_schema(conn, swalim_id: int, missing_dates: List[date
         data = [(row[0], row[1]) for row in result]
         return data
     except Exception as e:
-        print(f"    ⚠️  Error querying public.station_river_data: {e}")
+        logger.error(f"    ⚠️  Error querying public.station_river_data: {e}")
         return []
 
 
@@ -167,28 +148,22 @@ def insert_missing_data(conn, location: str, data: List[Tuple[date, float]]) -> 
             })
             inserted += 1
         except Exception as e:
-            print(f"    ⚠️  Failed to insert {date_val}: {e}")
+            logger.error(f"    ⚠️  Failed to insert {date_val}: {e}")
 
     conn.commit()
     return inserted
 
 
-def main():
+def fill_gaps_using_public_schema(config: Config) -> bool:
     """Main gap filling process."""
-    print("=" * 80)
-    print("FILL GAPS IN HISTORICAL RIVER LEVEL DATA")
-    print("=" * 80)
-    print()
-    print("This script fills data gaps using public.station_river_data")
-    print()
+    logger.info("=" * 80)
+    logger.info("FILL GAPS IN HISTORICAL RIVER LEVEL DATA")
+    logger.info("=" * 80)
+    logger.info("")
+    logger.info("This fills data gaps using public.station_river_data")
+    logger.info("")
 
     # Configuration
-    config_path = Path(__file__).parent.parent / "config" / "config.ini"
-    if not config_path.exists():
-        print(f"❌ Configuration file not found at {config_path}")
-        sys.exit(1)
-
-    config = Config(str(config_path))
     db = DatabaseConnection(config)
 
     total_gaps = 0
@@ -197,24 +172,24 @@ def main():
 
     with db.engine.connect() as conn:
         # Step 1: Get station mapping
-        print("Step 1: Loading station mapping")
-        print("-" * 80)
+        logger.info("Step 1: Loading station mapping")
+        logger.info("-" * 80)
 
         station_mapping = get_station_mapping(conn)
 
         if not station_mapping:
-            print("❌ No station mapping found in river_station_metadata")
-            print("   Check that swalim_internal_id is populated")
-            sys.exit(1)
+            logger.error("❌ No station mapping found in river_station_metadata")
+            logger.error("   Check that swalim_internal_id is populated")
+            return False
 
-        print(f"Found {len(station_mapping)} stations with SWALIM IDs:")
+        logger.info(f"Found {len(station_mapping)} stations with SWALIM IDs:")
         for station_name, swalim_id in station_mapping.items():
-            print(f"  - {station_name}: SWALIM ID {swalim_id}")
-        print()
+            logger.info(f"  - {station_name}: SWALIM ID {swalim_id}")
+        logger.info("")
 
         # Step 2: Analyze gaps for each station
-        print("Step 2: Analyzing data gaps")
-        print("-" * 80)
+        logger.info("Step 2: Analyzing data gaps")
+        logger.info("-" * 80)
 
         station_gaps = {}
 
@@ -222,119 +197,111 @@ def main():
             first_date, last_date, count = get_existing_data_range(conn, station_name)
 
             if first_date is None:
-                print(f"📍 {station_name}")
-                print(f"   No data exists - skipping (use full data import instead)")
-                print()
+                logger.info(f"📍 {station_name}")
+                logger.info(f"   No data exists - skipping (use full data import instead)")
+                logger.info("")
                 continue
 
             # Calculate expected records
             expected_records = (last_date - first_date).days + 1
             gap_count = expected_records - count
 
-            print(f"📍 {station_name}")
-            print(f"   Date range: {first_date} to {last_date}")
-            print(f"   Existing records: {count}")
-            print(f"   Expected records: {expected_records}")
+            logger.info(f"📍 {station_name}")
+            logger.info(f"   Date range: {first_date} to {last_date}")
+            logger.info(f"   Existing records: {count}")
+            logger.info(f"   Expected records: {expected_records}")
 
             if gap_count > 0:
-                print(f"   ⚠️  Gaps detected: {gap_count} missing days")
+                logger.info(f"   ⚠️  Gaps detected: {gap_count} missing days")
 
                 # Identify specific missing dates
                 missing_dates = identify_gaps(conn, station_name, first_date, last_date)
                 station_gaps[station_name] = missing_dates
                 total_gaps += len(missing_dates)
 
-                print(f"   Missing dates: {len(missing_dates)}")
+                logger.info(f"   Missing dates: {len(missing_dates)}")
                 if len(missing_dates) <= 10:
                     for d in missing_dates:
-                        print(f"      - {d}")
+                        logger.info(f"      - {d}")
                 else:
-                    print(f"      First: {missing_dates[0]}")
-                    print(f"      Last: {missing_dates[-1]}")
+                    logger.info(f"      First: {missing_dates[0]}")
+                    logger.info(f"      Last: {missing_dates[-1]}")
             else:
-                print(f"   ✅ No gaps - data is continuous")
+                logger.info(f"   ✅ No gaps - data is continuous")
 
-            print()
+            logger.info("")
 
         if total_gaps == 0:
-            print("✅ No gaps found! All stations have continuous data.")
-            print("=" * 80)
-            return
+            logger.info("✅ No gaps found! All stations have continuous data.")
+            logger.info("=" * 80)
+            return True
 
-        print(f"📊 Total gaps found: {total_gaps} missing days across {len(station_gaps)} stations")
-        print()
+        logger.info(f"📊 Total gaps found: {total_gaps} missing days across {len(station_gaps)} stations")
+        logger.info("")
 
         # Step 3: Confirm before filling
-        print("⚠️  This will fetch data from public.station_river_data and fill the gaps.")
-        print()
-        response = input("Do you want to proceed? (yes/no): ").strip().lower()
+        logger.info("⚠️  This will fetch data from public.station_river_data and fill the gaps.")
+        logger.info("")
 
-        if response != "yes":
-            print("❌ Gap filling cancelled by user.")
-            sys.exit(0)
-
-        print()
-        print("Step 3: Filling gaps from public.station_river_data")
-        print("-" * 80)
+        logger.info("")
+        logger.info("Step 3: Filling gaps from public.station_river_data")
+        logger.info("-" * 80)
 
         # Step 4: Fill gaps for each station
         for station_name, missing_dates in station_gaps.items():
             swalim_id = station_mapping[station_name]
 
-            print(f"📍 {station_name} (SWALIM ID: {swalim_id})")
-            print(f"   Fetching data for {len(missing_dates)} missing dates...")
+            logger.info(f"📍 {station_name} (SWALIM ID: {swalim_id})")
+            logger.info(f"   Fetching data for {len(missing_dates)} missing dates...")
 
             # Fetch data from public schema
             source_data = fetch_data_from_public_schema(conn, swalim_id, missing_dates)
 
             if not source_data:
-                print(f"   ⚠️  No data found in public.station_river_data")
+                logger.error(f"   ⚠️  No data found in public.station_river_data")
                 total_missing_in_source += len(missing_dates)
-                print()
+                logger.info("")
                 continue
 
-            print(f"   Found {len(source_data)} records in source table")
+            logger.info(f"   Found {len(source_data)} records in source table")
 
             # Filter to only dates that were missing
             missing_dates_set = set(missing_dates)
             filtered_data = [(d, v) for d, v in source_data if d in missing_dates_set]
 
-            print(f"   Inserting {len(filtered_data)} records...")
+            logger.info(f"   Inserting {len(filtered_data)} records...")
 
             # Insert data
             inserted = insert_missing_data(conn, station_name, filtered_data)
             total_filled += inserted
 
             if inserted > 0:
-                print(f"   ✅ Successfully inserted {inserted} records")
+                logger.info(f"   ✅ Successfully inserted {inserted} records")
 
             # Check if any dates still missing
             still_missing = len(missing_dates) - inserted
             if still_missing > 0:
-                print(f"   ⚠️  {still_missing} dates still missing (no data in source)")
+                logger.error(f"   ⚠️  {still_missing} dates still missing (no data in source)")
                 total_missing_in_source += still_missing
 
-            print()
+            logger.info("")
 
-        print("=" * 80)
-        print("GAP FILLING COMPLETE")
-        print("=" * 80)
-        print(f"Total gaps found: {total_gaps}")
-        print(f"Successfully filled: {total_filled}")
-        print(f"Still missing (no source data): {total_missing_in_source}")
-        print()
+        logger.info("=" * 80)
+        logger.info("GAP FILLING COMPLETE")
+        logger.info("=" * 80)
+        logger.info(f"Total gaps found: {total_gaps}")
+        logger.info(f"Successfully filled: {total_filled}")
+        logger.info(f"Still missing (no source data): {total_missing_in_source}")
+        logger.info("")
 
         if total_filled > 0:
-            print("✅ Gaps have been filled! Run check_river_data_availability.py to verify.")
-            print()
-            print("Next steps:")
-            print("  1. Verify gaps are filled: python scripts/check_river_data_availability.py")
-            print("  2. Run catchup: python scripts/catchup_missing_predictions.py")
+            logger.info("✅ Gaps have been filled! Run check_river_data_availability.py to verify.")
+            logger.info("")
+            logger.info("Next steps:")
+            logger.info("  1. Verify gaps are filled: python scripts/check_river_data_availability.py")
+            logger.info("  2. Run catchup: python scripts/catchup_missing_predictions.py")
         else:
-            print("⚠️  No data was filled. The source table may not have the data needed.")
+            logger.info("⚠️  No data was filled. The source table may not have the data needed.")
+            return False
 
-        print("=" * 80)
-
-
-if __name__ == "__main__":
-    main()
+        logger.info("=" * 80)
