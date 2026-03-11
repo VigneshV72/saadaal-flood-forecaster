@@ -18,7 +18,6 @@ SKIPPED_COUNT=0
 
 # flood-cli commands
 FETCH_RIVER_LEVEL_DATA_COMMAND="flood-cli data-ingestion fetch-river-data"
-FETCH_RIVER_LEVEL_DATA_PUBLIC_SCHEMA_COMMAND="flood-cli data-ingestion fetch-river-data-from-public-schema"
 FETCH_HISTORICAL_WEATHER_DATA_COMMAND="flood-cli data-ingestion fetch-openmeteo historical"
 FETCH_FORECAST_WEATHER_DATA_COMMAND="flood-cli data-ingestion fetch-openmeteo forecast"
 # ML_INFER_COMMAND is built per-station in the loop
@@ -208,15 +207,6 @@ fi
 # River data (retry with backoff)
 retry_command "$FETCH_RIVER_LEVEL_DATA_COMMAND" "Fetch river level data" || {
     echo -e "${YELLOW}⚠️  River data fetch failed, will use existing data${NC}"
-}
-
-echo ""
-echo "============================================================================"
-echo "🔮 PHASE 1.1: DATA INGESTION BACK UP FROM PUBLIC SCHEMA "
-echo "============================================================================"
-
-retry_command "$FETCH_RIVER_LEVEL_DATA_PUBLIC_SCHEMA_COMMAND" "Fetch river level data from public schema" || {
-    echo -e "${YELLOW}⚠️  River data fetch from public schema failed, will use existing data${NC}"
 }
 
 echo ""

@@ -82,6 +82,15 @@ def fetch_river_data(configuration: Config):
     if historical_river_levels:
         new_river_levels_count = insert_river_data(historical_river_levels, configuration, avoid_duplicates=True)
         click.echo(f"Inserted {new_river_levels_count} river levels into the database.")
+        if new_river_levels_count == 0:
+            click.echo("No new river data fetched from SWALIM API. Trying to fetch from public schema as fallback...")
+            # Fallback: Try to fetch river data from public schema station_river_data
+            from flood_forecaster.data_ingestion.swalim.station_river_data import fill_gaps_using_public_schema
+            success = fill_gaps_using_public_schema(configuration)
+            if success:
+                click.echo("Successfully fetched river data from public schema.")
+            else:
+                click.echo("Failed to fetch river data from public schema as well. Please check the logs for more details.")
     else:
         click.echo("No new river data fetched.")
 
@@ -98,7 +107,7 @@ def fetch_river_data_from_public_schema(configuration: Config):
     :param configuration: Configuration object containing settings.
     """
     click.echo("Fetching river data from public schema station_river_data...")
-    from flood_forecaster.data_ingestion.public_schema.station_river_data import fill_gaps_using_public_schema
+    from flood_forecaster.data_ingestion.swalim.station_river_data import fill_gaps_using_public_schema
     success = fill_gaps_using_public_schema(configuration)
     if success:
         click.echo("Successfully fetched river data from public schema.")

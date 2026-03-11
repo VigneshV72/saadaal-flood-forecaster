@@ -2,127 +2,126 @@ import datetime
 import unittest
 from unittest.mock import MagicMock, patch
 
-from flood_forecaster.data_ingestion.public_schema import station_river_data
+from flood_forecaster.data_ingestion.swalim import station_river_data
 
 
 class TestStationRiverDataIntegration(unittest.TestCase):
-	def test_get_station_mapping_returns_expected_dictionary(self):
-		conn = MagicMock()
-		conn.execute.return_value = [
-			("Belet Weyne", 101),
-			("Jowhar", 202),
-		]
+    def test_identify_gaps_detects_missing_dates(self):
+        session = MagicMock()
+        query_chain = session.query.return_value.filter.return_value.order_by.return_value
+        query_chain.all.return_value = [
+            (datetime.date(2026, 1, 1),),
+            (datetime.date(2026, 1, 3),),
+        ]
 
-		mapping = station_river_data.get_station_mapping(conn)
+        missing_dates = station_river_data.identify_gaps(
+            session,
+            location="Jowhar",
+            first_date=datetime.date(2026, 1, 1),
+            last_date=datetime.date(2026, 1, 3),
+        )
 
-		self.assertEqual(mapping, {"Belet Weyne": 101, "Jowhar": 202})
-		conn.execute.assert_called_once()
+        self.assertEqual(missing_dates, [datetime.date(2026, 1, 2)])
+        session.query.assert_called_once()
 
-	def test_identify_gaps_detects_missing_dates(self):
-		conn = MagicMock()
-		conn.execute.return_value = [
-			(datetime.date(2026, 1, 1),),
-			(datetime.date(2026, 1, 3),),
-		]
+    def test_fetch_data_from_public_schema_with_empty_dates_skips_query(self):
+        session = MagicMock()
 
-		missing_dates = station_river_data.identify_gaps(
-			conn,
-			location="Jowhar",
-			first_date=datetime.date(2026, 1, 1),
-			last_date=datetime.date(2026, 1, 3),
-		)
+        data = station_river_data.fetch_data_from_public_schema(session, swalim_id=12, missing_dates=[])
 
-		self.assertEqual(missing_dates, [datetime.date(2026, 1, 2)])
-		conn.execute.assert_called_once()
+        self.assertEqual(data, [])
+        session.query.assert_not_called()
 
-	def test_fetch_data_from_public_schema_with_empty_dates_skips_query(self):
-		conn = MagicMock()
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.get_station_mapping")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.DatabaseConnection")
+    def test_fill_gaps_returns_false_when_station_mapping_missing(self, mock_db_connection, mock_get_station_mapping):
+        mock_db_connection.return_value = MagicMock()
+        mock_get_station_mapping.return_value = []
+        config = MagicMock()
 
-		data = station_river_data.fetch_data_from_public_schema(conn, swalim_id=12, missing_dates=[])
+        result = station_river_data.fill_gaps_using_public_schema(config=config)
 
-		self.assertEqual(data, [])
-		conn.execute.assert_not_called()
+        self.assertFalse(result)
+        mock_get_station_mapping.assert_called_once_with(config)
 
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.get_station_mapping")
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.DatabaseConnection")
-	def test_fill_gaps_returns_false_when_station_mapping_missing(self, mock_db_connection, mock_get_station_mapping):
-		mock_conn = MagicMock()
-		mock_db = MagicMock()
-		mock_db.engine.connect.return_value.__enter__.return_value = mock_conn
-		mock_db_connection.return_value = mock_db
-		mock_get_station_mapping.return_value = {}
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.identify_gaps")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.get_existing_data_range")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.get_station_mapping")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.Session")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.DatabaseConnection")
+    def test_fill_gaps_returns_true_when_no_gaps_found(
+        self,
+        mock_db_connection,
+        mock_session_cls,
+        mock_get_station_mapping,
+        mock_get_existing_data_range,
+        mock_identify_gaps,
+    ):
+        mock_conn = MagicMock()
+        mock_db = MagicMock()
+        mock_db.engine.connect.return_value.__enter__.return_value = mock_conn
+        mock_db_connection.return_value = mock_db
 
-		result = station_river_data.fill_gaps_using_public_schema(config=MagicMock())
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
 
-		self.assertFalse(result)
-		mock_get_station_mapping.assert_called_once_with(mock_conn)
+        station = MagicMock(station_name="Jowhar", swalim_internal_id=301)
+        mock_get_station_mapping.return_value = [station]
+        # 3 expected days and 3 records means no gap.
+        mock_get_existing_data_range.return_value = (
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 3),
+            3,
+        )
 
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.identify_gaps")
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.get_existing_data_range")
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.get_station_mapping")
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.DatabaseConnection")
-	def test_fill_gaps_returns_true_when_no_gaps_found(
-		self,
-		mock_db_connection,
-		mock_get_station_mapping,
-		mock_get_existing_data_range,
-		mock_identify_gaps,
-	):
-		mock_conn = MagicMock()
-		mock_db = MagicMock()
-		mock_db.engine.connect.return_value.__enter__.return_value = mock_conn
-		mock_db_connection.return_value = mock_db
+        result = station_river_data.fill_gaps_using_public_schema(config=MagicMock())
 
-		mock_get_station_mapping.return_value = {"Jowhar": 301}
-		# 3 expected days and 3 records means no gap.
-		mock_get_existing_data_range.return_value = (
-			datetime.date(2026, 1, 1),
-			datetime.date(2026, 1, 3),
-			3,
-		)
+        self.assertTrue(result)
+        mock_identify_gaps.assert_not_called()
 
-		result = station_river_data.fill_gaps_using_public_schema(config=MagicMock())
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.insert_missing_data")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.fetch_data_from_public_schema")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.identify_gaps")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.get_existing_data_range")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.get_station_mapping")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.Session")
+    @patch("flood_forecaster.data_ingestion.swalim.station_river_data.DatabaseConnection")
+    def test_fill_gaps_returns_false_when_source_has_no_data(
+        self,
+        mock_db_connection,
+        mock_session_cls,
+        mock_get_station_mapping,
+        mock_get_existing_data_range,
+        mock_identify_gaps,
+        mock_fetch_data,
+        mock_insert_missing_data,
+    ):
+        mock_conn = MagicMock()
+        mock_db = MagicMock()
+        mock_db.engine.connect.return_value.__enter__.return_value = mock_conn
+        mock_db_connection.return_value = mock_db
 
-		self.assertTrue(result)
-		mock_identify_gaps.assert_not_called()
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
 
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.insert_missing_data")
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.fetch_data_from_public_schema")
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.identify_gaps")
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.get_existing_data_range")
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.get_station_mapping")
-	@patch("flood_forecaster.data_ingestion.public_schema.station_river_data.DatabaseConnection")
-	def test_fill_gaps_returns_false_when_source_has_no_data(
-		self,
-		mock_db_connection,
-		mock_get_station_mapping,
-		mock_get_existing_data_range,
-		mock_identify_gaps,
-		mock_fetch_data,
-		mock_insert_missing_data,
-	):
-		mock_conn = MagicMock()
-		mock_db = MagicMock()
-		mock_db.engine.connect.return_value.__enter__.return_value = mock_conn
-		mock_db_connection.return_value = mock_db
+        missing_date = datetime.date(2026, 1, 2)
+        station = MagicMock(station_name="Jowhar", swalim_internal_id=301)
+        mock_get_station_mapping.return_value = [station]
+        # Range includes 3 days but only 2 existing records, so one gap.
+        mock_get_existing_data_range.return_value = (
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 3),
+            2,
+        )
+        mock_identify_gaps.return_value = [missing_date]
+        mock_fetch_data.return_value = []
 
-		missing_date = datetime.date(2026, 1, 2)
-		mock_get_station_mapping.return_value = {"Jowhar": 301}
-		# Range includes 3 days but only 2 existing records, so one gap.
-		mock_get_existing_data_range.return_value = (
-			datetime.date(2026, 1, 1),
-			datetime.date(2026, 1, 3),
-			2,
-		)
-		mock_identify_gaps.return_value = [missing_date]
-		mock_fetch_data.return_value = []
+        result = station_river_data.fill_gaps_using_public_schema(config=MagicMock())
 
-		result = station_river_data.fill_gaps_using_public_schema(config=MagicMock())
-
-		self.assertFalse(result)
-		mock_fetch_data.assert_called_once_with(mock_conn, 301, [missing_date])
-		mock_insert_missing_data.assert_not_called()
+        self.assertFalse(result)
+        mock_fetch_data.assert_called_once_with(mock_session, 301, [missing_date])
+        mock_insert_missing_data.assert_not_called()
 
 
 if __name__ == "__main__":
-	unittest.main()
+    unittest.main()
